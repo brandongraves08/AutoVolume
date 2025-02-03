@@ -1,11 +1,15 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <PubSubClient.h>
 #include "config.h"
 
 // Global variables
 unsigned long lastVolumeCheck = 0;
 bool volumeReduced = false;
+
+WiFiClient espClient;
+PubSubClient client(espClient);
 
 void setup() {
   Serial.begin(115200);
@@ -21,6 +25,27 @@ void setup() {
   // Configure ADC
   analogReadResolution(12);  // Set ADC resolution to 12 bits
   analogSetAttenuation(ADC_11db);  // Set ADC attenuation for 3.3V full-scale range
+  
+  // MQTT Configuration
+  client.setServer(MQTT_SERVER, MQTT_PORT);
+  client.setCallback(mqttCallback);
+  
+  reconnectMQTT();
+  
+  // HA Sensor Auto-Discovery
+  String sensorConfig = R"(
+  {
+    "name":"Ambient Sound Level",
+    "state_topic":"home/autovolume/sound_level",
+    "unit_of_meas":"dB",
+    "device_class":"signal_strength",
+    "expire_after":300
+  }
+  )";
+  client.publish("homeassistant/sensor/autovolume/config", sensorConfig.c_str());
+  
+  String discoveryPayload = R"({\n    \"name\": \"AutoVolume Sound Level\",\n    \"state_topic\": \"home/autovolume/sound_level\",\n    \"unit_of_measurement\": \"dB\",\n    \"device_class\": \"signal_strength\",\n    \"expire_after\": 300\n  })";
+  client.publish(HA_AUTO_DISCOVERY_TOPIC, discoveryPayload.c_str());
 }
 
 int getSoundLevel() {
@@ -74,7 +99,34 @@ void adjustTVVolume(bool reduce) {
   http.end();
 }
 
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (int i=0;i<length;i++) {
+    message += (char)payload[i];
+  }
+  
+  if (String(topic) == MQTT_TOPIC) {
+    int targetVolume = message.toInt();
+    // Implement volume adjustment logic here
+  }
+}
+
+void reconnectMQTT() {
+  while (!client.connected()) {
+    if (client.connect("AutoVolumeClient", MQTT_USER, MQTT_PASSWORD)) {
+      client.subscribe(MQTT_TOPIC);
+    } else {
+      delay(5000);
+    }
+  }
+}
+
 void loop() {
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
+  
   unsigned long currentMillis = millis();
   
   // Check sound level periodically
@@ -94,5 +146,12 @@ void loop() {
       adjustTVVolume(false);  // Increase volume
       volumeReduced = false;
     }
+  }
+  
+  static unsigned long lastSoundReport = 0;
+  if (currentMillis - lastSoundReport >= SOUND_REPORT_INTERVAL) {
+    int soundLevel = getSoundLevel();
+    client.publish("home/autovolume/sound_level", String(soundLevel).c_str());
+    lastSoundReport = currentMillis;
   }
 }

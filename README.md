@@ -33,3 +33,57 @@ This project uses an ESP32 microcontroller with a microphone module to monitor a
 - Configurable threshold for volume reduction
 - Integration with Home Assistant for TV control
 - Automatic volume adjustment based on ambient noise
+
+## Home Assistant Integration
+
+### Requirements
+- Home Assistant instance with Mosquitto MQTT broker add-on
+- Long-lived access token created in Home Assistant
+
+### Configuration Steps
+1. Update MQTT credentials in `config.h`:
+```cpp
+#define MQTT_SERVER "your_mqtt_broker_ip"
+#define MQTT_USER "your_username"
+#define MQTT_PASSWORD "your_password"
+```
+
+2. Flash the ESP32:
+```bash
+platformio run --target upload
+```
+
+3. Add MQTT sensor to your Home Assistant `configuration.yaml`:
+```yaml
+mqtt:
+  sensor:
+    - name: "Ambient Sound Level"
+      state_topic: "home/autovolume/sound_level"
+      unit_of_measurement: "dB"
+      expire_after: 300
+```
+
+4. Create dashboard in Lovelace UI:
+```yaml
+type: vertical-stack
+cards:
+  - type: gauge
+    entity: sensor.ambient_sound_level
+    name: Live Sound Level
+    min: 0
+    max: 4095
+    severity:
+      green: 0
+      yellow: 2000
+      red: 3500
+  - type: history-graph
+    entities:
+      - entity: sensor.ambient_sound_level
+    hours_to_show: 24
+    refresh_interval: 60
+```
+
+### Troubleshooting
+- **No Data**: Check MQTT connection status in ESP32 serial monitor
+- **Stale Data**: Verify `expire_after` matches in code and config
+- **Incorrect Values**: Calibrate sound sensor thresholds in `config.h`
