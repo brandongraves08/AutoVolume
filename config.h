@@ -2,18 +2,18 @@
 #define CONFIG_H
 
 // WiFi Configuration
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID "Mine!"
+#define WIFI_PASSWORD "welcomehome"
 
 // Home Assistant Configuration
-#define HA_URL "http://your_home_assistant_ip:8123"
-#define HA_TOKEN "your_long_lived_access_token"
+#define HA_URL "http://homeassistant.local:8123"
+#define HA_TOKEN "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjNDcyMmQwZTRjYzI0MzI0ODI1ZmNiMDVmMGRhMGE2NCIsImlhdCI6MTczODYyMTk2OCwiZXhwIjoyMDUzOTgxOTY4fQ.Qw9eMxyGhJrGFilOim9G_Z27wuUAi23g8wyrdV1sJzU"
 
 // MQTT Configuration
-#define MQTT_SERVER "your_mqtt_broker_ip"
+#define MQTT_SERVER "192.168.0.188"
 #define MQTT_PORT 1883
-#define MQTT_USER "mqtt_username"
-#define MQTT_PASSWORD "mqtt_password"
+#define MQTT_USER "autosound"
+#define MQTT_PASSWORD "1Workhard!"
 #define MQTT_TOPIC "home/autovolume/control"
 
 // Sound Detection Configuration
@@ -27,6 +27,6 @@
 #define HA_AUTO_DISCOVERY_TOPIC "homeassistant/sensor/autovolume/config"
 
 // TV Entity Configuration
-#define TV_ENTITY_ID "media_player.your_tv_entity_id"
+#define TV_ENTITY_ID "media_player.living_room_tv"
 
 #endif

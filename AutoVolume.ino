@@ -1,15 +1,39 @@
+#include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include "config.h"
 
+// Sound metrics structure
+struct SoundMetrics {
+  int current;           // Current reading
+  int peak;             // Peak level in the sampling window
+  float average;        // Running average
+  int samples;          // Number of samples taken
+  float variance;       // Sound variance (for detecting sudden changes)
+  unsigned long lastPeakTime;  // When the last peak occurred
+};
+
+// Function prototypes
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void reconnectMQTT();
+int getSoundLevel();
+void adjustTVVolume(bool reduce);
+void updateSoundMetrics(int newReading);
+void publishMetrics();
+
 // Global variables
+WiFiClient espClient;
+PubSubClient client(espClient);
 unsigned long lastVolumeCheck = 0;
 bool volumeReduced = false;
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+// Metrics variables
+SoundMetrics metrics = {0, 0, 0, 0, 0, 0};
+const int SAMPLES_WINDOW = 100;  // Number of samples to consider for metrics
+float samples[SAMPLES_WINDOW];   // Circular buffer for samples
+int sampleIndex = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -121,6 +145,64 @@ void reconnectMQTT() {
   }
 }
 
+void updateSoundMetrics(int newReading) {
+  // Update current reading
+  metrics.current = newReading;
+  
+  // Update peak
+  if (newReading > metrics.peak) {
+    metrics.peak = newReading;
+    metrics.lastPeakTime = millis();
+  }
+  
+  // Reset peak if it's older than 5 seconds
+  if (millis() - metrics.lastPeakTime > 5000) {
+    metrics.peak = newReading;
+    metrics.lastPeakTime = millis();
+  }
+  
+  // Update samples buffer
+  samples[sampleIndex] = newReading;
+  sampleIndex = (sampleIndex + 1) % SAMPLES_WINDOW;
+  
+  if (metrics.samples < SAMPLES_WINDOW) {
+    metrics.samples++;
+  }
+  
+  // Calculate running average
+  float sum = 0;
+  for (int i = 0; i < metrics.samples; i++) {
+    sum += samples[i];
+  }
+  metrics.average = sum / metrics.samples;
+  
+  // Calculate variance
+  float sumSquareDiff = 0;
+  for (int i = 0; i < metrics.samples; i++) {
+    float diff = samples[i] - metrics.average;
+    sumSquareDiff += diff * diff;
+  }
+  metrics.variance = sumSquareDiff / metrics.samples;
+}
+
+void publishMetrics() {
+  StaticJsonDocument<256> doc;
+  doc["current"] = metrics.current;
+  doc["peak"] = metrics.peak;
+  doc["average"] = metrics.average;
+  doc["variance"] = metrics.variance;
+  
+  char buffer[256];
+  serializeJson(doc, buffer);
+  client.publish("home/autovolume/metrics", buffer);
+  
+  // Also publish individual metrics for easier HA integration
+  client.publish("home/autovolume/sound_level", String(metrics.current).c_str());
+  client.publish("home/autovolume/sound_peak", String(metrics.peak).c_str());
+  client.publish("home/autovolume/sound_average", String(metrics.average).c_str());
+  client.publish("home/autovolume/sound_variance", String(metrics.variance).c_str());
+}
+
 void loop() {
   if (!client.connected()) {
     reconnectMQTT();
@@ -134,6 +216,7 @@ void loop() {
     lastVolumeCheck = currentMillis;
     
     int soundLevel = getSoundLevel();
+    updateSoundMetrics(soundLevel);
     Serial.printf("Sound level: %d\n", soundLevel);
     
     // If sound is above threshold and volume hasn't been reduced
@@ -150,8 +233,7 @@ void loop() {
   
   static unsigned long lastSoundReport = 0;
   if (currentMillis - lastSoundReport >= SOUND_REPORT_INTERVAL) {
-    int soundLevel = getSoundLevel();
-    client.publish("home/autovolume/sound_level", String(soundLevel).c_str());
+    publishMetrics();
     lastSoundReport = currentMillis;
   }
 }

@@ -37,10 +37,12 @@
 *.bin
 
 # IDE specific
-.vscode/
 .idea/
 __pycache__/
 *.pyc
 
 # Environment specific
 .env
+
+# Configuration files
+config.h
