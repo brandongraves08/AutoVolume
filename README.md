@@ -2,6 +2,27 @@
 
 This project uses an ESP32 microcontroller with a microphone module to monitor ambient sound levels and automatically adjust TV volume through Home Assistant integration.
 
+## Dependencies
+
+### Python Packages
+```bash
+pip install -r requirements.txt
+```
+
+### Arduino Libraries
+1. PubSubClient (for MQTT communication)
+   - Open Arduino IDE
+   - Go to Tools > Manage Libraries
+   - Search for "PubSubClient"
+   - Click Install
+
+   OR using PlatformIO:
+   ```ini
+   # platformio.ini
+   lib_deps =
+     knolleary/PubSubClient @ ^2.8
+   ```
+
 ## Hardware Requirements
 
 - ESP32 Development Board

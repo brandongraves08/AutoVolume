@@ -1,3 +1,2 @@
 esphome==2023.12.0
 homeassistant-api>=4.0.0
-PubSubClient==2.8.0
