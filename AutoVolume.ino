@@ -28,7 +28,7 @@ PubSubClient client(espClient);
 unsigned long lastSoundCheck = 0;
 int currentSoundLevel = 0;
 int peakSoundLevel = 0;
-float averageSoundLevel = -1.0;
+int averageSoundLevel = -1;
 
 void setup() {
   Serial.begin(115200);
@@ -71,16 +71,16 @@ void loop() {
 
     // Prepare and send MQTT message with scaled values
     StaticJsonDocument<200> doc;
-    doc["level"] = currentSoundLevel;  // Already in dB scale (30-100)
-    doc["peak"] = peakSoundLevel;      // Already in dB scale (30-100)
-    doc["average"] = averageSoundLevel; // Already in dB scale (30-100)
+    doc["level"] = currentSoundLevel;    // Already in dB scale (25-100)
+    doc["peak"] = peakSoundLevel;        // Already in dB scale (25-100)
+    doc["average"] = averageSoundLevel;  // Now a whole number
     
     char buffer[200];
     serializeJson(doc, buffer);
     client.publish("home/sound/level", buffer);
     
-    // Debug output
-    Serial.printf("Sound Metrics - Current: %d, Peak: %d, Average: %.2f\n", 
+    // Debug output with whole numbers
+    Serial.printf("Sound Metrics - Current: %d, Peak: %d, Average: %d\n", 
                  currentSoundLevel, peakSoundLevel, averageSoundLevel);
   }
 }
@@ -162,12 +162,14 @@ void updateSoundMetrics(int newReading) {
     lastPeakReset = millis();
   }
   
-  // Update running average with smoothing
+  // Update running average with smoothing (now as whole number)
   const float alpha = 0.1; // Smoothing factor (0.1 = 10% weight to new readings)
   if (averageSoundLevel < 0) {
     averageSoundLevel = newReading;
   } else {
-    averageSoundLevel = (alpha * newReading) + ((1 - alpha) * averageSoundLevel);
+    // Calculate new average and round to nearest integer
+    float newAverage = (alpha * newReading) + ((1 - alpha) * averageSoundLevel);
+    averageSoundLevel = round(newAverage);
   }
 }
 
