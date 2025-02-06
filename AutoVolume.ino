@@ -19,24 +19,26 @@ struct SoundMetrics {
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void reconnectMQTT();
 int getSoundLevel();
-void adjustTVVolume(bool reduce);
 void updateSoundMetrics(int newReading);
 void publishMetrics();
 
 // Global variables
 WiFiClient espClient;
 PubSubClient client(espClient);
-unsigned long lastVolumeCheck = 0;
-bool volumeReduced = false;
-
-// Metrics variables
-SoundMetrics metrics = {0, 0, 0, 0, 0, 0};
-const int SAMPLES_WINDOW = 100;  // Number of samples to consider for metrics
-float samples[SAMPLES_WINDOW];   // Circular buffer for samples
-int sampleIndex = 0;
+unsigned long lastSoundCheck = 0;
+int currentSoundLevel = 0;
+int peakSoundLevel = 0;
+float averageSoundLevel = -1.0;
 
 void setup() {
   Serial.begin(115200);
+  
+  // Configure ADC
+  analogReadResolution(12);  // Set ADC resolution to 12 bits (0-4095)
+  analogSetAttenuation(ADC_11db);  // Set ADC attenuation for higher voltage range
+  
+  // Configure microphone pin
+  pinMode(SOUND_SENSOR_PIN, INPUT);
   
   // Initialize WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -46,81 +48,127 @@ void setup() {
   }
   Serial.println("\nConnected to WiFi");
   
-  // Configure ADC
-  analogReadResolution(12);  // Set ADC resolution to 12 bits
-  analogSetAttenuation(ADC_11db);  // Set ADC attenuation for 3.3V full-scale range
-  
   // MQTT Configuration
   client.setServer(MQTT_SERVER, MQTT_PORT);
   client.setCallback(mqttCallback);
   
   reconnectMQTT();
-  
-  // HA Sensor Auto-Discovery
-  String sensorConfig = R"(
-  {
-    "name":"Ambient Sound Level",
-    "state_topic":"home/autovolume/sound_level",
-    "unit_of_meas":"dB",
-    "device_class":"signal_strength",
-    "expire_after":300
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnectMQTT();
   }
-  )";
-  client.publish("homeassistant/sensor/autovolume/config", sensorConfig.c_str());
-  
-  String discoveryPayload = R"({\n    \"name\": \"AutoVolume Sound Level\",\n    \"state_topic\": \"home/autovolume/sound_level\",\n    \"unit_of_measurement\": \"dB\",\n    \"device_class\": \"signal_strength\",\n    \"expire_after\": 300\n  })";
-  client.publish(HA_AUTO_DISCOVERY_TOPIC, discoveryPayload.c_str());
+  client.loop();
+
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastSoundCheck >= VOLUME_CHECK_INTERVAL) {
+    lastSoundCheck = currentMillis;
+    
+    // Get sound readings and update metrics
+    int soundLevel = getSoundLevel();
+    updateSoundMetrics(soundLevel);
+
+    // Prepare and send MQTT message with scaled values
+    StaticJsonDocument<200> doc;
+    doc["level"] = currentSoundLevel;  // Already in dB scale (30-100)
+    doc["peak"] = peakSoundLevel;      // Already in dB scale (30-100)
+    doc["average"] = averageSoundLevel; // Already in dB scale (30-100)
+    
+    char buffer[200];
+    serializeJson(doc, buffer);
+    client.publish("home/sound/level", buffer);
+    
+    // Debug output
+    Serial.printf("Sound Metrics - Current: %d, Peak: %d, Average: %.2f\n", 
+                 currentSoundLevel, peakSoundLevel, averageSoundLevel);
+  }
 }
 
 int getSoundLevel() {
   unsigned long startMillis = millis();
+  unsigned long soundSum = 0;
+  unsigned int sampleCount = 0;
   unsigned int soundMax = 0;
+  const int NOISE_THRESHOLD = 50;  // Lowered threshold for quieter sounds
   
   // Sample sound levels over the defined window
   while (millis() - startMillis < SAMPLE_WINDOW) {
     unsigned int sample = analogRead(SOUND_SENSOR_PIN);
-    if (sample > soundMax) {
-      soundMax = sample;
+    
+    // Include all readings above noise floor
+    if (sample > NOISE_THRESHOLD) {
+      soundSum += sample;
+      sampleCount++;
+      if (sample > soundMax) {
+        soundMax = sample;
+      }
     }
+    
+    // Small delay to stabilize ADC
+    delayMicroseconds(100);
   }
   
-  return soundMax;
+  // Calculate average
+  unsigned int soundAvg = (sampleCount > 0) ? (soundSum / sampleCount) : 0;
+  
+  // Print debug info
+  Serial.print("Raw MAX value: ");
+  Serial.println(soundMax);
+  Serial.print("Raw AVG value: ");
+  Serial.println(soundAvg);
+  Serial.print("Samples counted: ");
+  Serial.println(sampleCount);
+  
+  // Use average instead of max for more stable readings
+  unsigned int soundValue = soundAvg;
+  
+  // Handle very quiet environments
+  if (soundValue < NOISE_THRESHOLD) {
+    soundValue = NOISE_THRESHOLD;
+  }
+  
+  // Convert to dB scale (adjusted for better range)
+  // 25 dB is very quiet room, 100 dB is very loud
+  float dB = 25 + (20 * log10((float)soundValue / NOISE_THRESHOLD));
+  
+  // Print calculated values
+  Serial.print("Calculated dB: ");
+  Serial.println(dB);
+  
+  // Constrain to reasonable room values
+  int finalDB = constrain((int)dB, 25, 100);
+  
+  Serial.print("Final dB: ");
+  Serial.println(finalDB);
+  Serial.println();
+  
+  return finalDB;
 }
 
-void adjustTVVolume(bool reduce) {
-  if (WiFi.status() != WL_CONNECTED) {
-    return;
+void updateSoundMetrics(int newReading) {
+  // Update current level (already in dB scale)
+  currentSoundLevel = newReading;
+  
+  // Update peak level
+  if (newReading > peakSoundLevel) {
+    peakSoundLevel = newReading;
   }
-
-  HTTPClient http;
   
-  // Create JSON payload
-  StaticJsonDocument<200> doc;
-  doc["entity_id"] = TV_ENTITY_ID;
+  // Reset peak if it's been a while (5 minutes)
+  static unsigned long lastPeakReset = 0;
+  if (millis() - lastPeakReset > 300000) {  // 5 minutes
+    peakSoundLevel = newReading;
+    lastPeakReset = millis();
+  }
   
-  if (reduce) {
-    doc["service"] = "volume_down";
+  // Update running average with smoothing
+  const float alpha = 0.1; // Smoothing factor (0.1 = 10% weight to new readings)
+  if (averageSoundLevel < 0) {
+    averageSoundLevel = newReading;
   } else {
-    doc["service"] = "volume_up";
+    averageSoundLevel = (alpha * newReading) + ((1 - alpha) * averageSoundLevel);
   }
-  
-  String jsonString;
-  serializeJson(doc, jsonString);
-  
-  // Send request to Home Assistant
-  http.begin(String(HA_URL) + "/api/services/media_player/" + (reduce ? "volume_down" : "volume_up"));
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + String(HA_TOKEN));
-  
-  int httpResponseCode = http.POST(jsonString);
-  
-  if (httpResponseCode > 0) {
-    Serial.printf("Volume %s: Success\n", reduce ? "decreased" : "increased");
-  } else {
-    Serial.printf("Error adjusting volume: %d\n", httpResponseCode);
-  }
-  
-  http.end();
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -142,98 +190,5 @@ void reconnectMQTT() {
     } else {
       delay(5000);
     }
-  }
-}
-
-void updateSoundMetrics(int newReading) {
-  // Update current reading
-  metrics.current = newReading;
-  
-  // Update peak
-  if (newReading > metrics.peak) {
-    metrics.peak = newReading;
-    metrics.lastPeakTime = millis();
-  }
-  
-  // Reset peak if it's older than 5 seconds
-  if (millis() - metrics.lastPeakTime > 5000) {
-    metrics.peak = newReading;
-    metrics.lastPeakTime = millis();
-  }
-  
-  // Update samples buffer
-  samples[sampleIndex] = newReading;
-  sampleIndex = (sampleIndex + 1) % SAMPLES_WINDOW;
-  
-  if (metrics.samples < SAMPLES_WINDOW) {
-    metrics.samples++;
-  }
-  
-  // Calculate running average
-  float sum = 0;
-  for (int i = 0; i < metrics.samples; i++) {
-    sum += samples[i];
-  }
-  metrics.average = sum / metrics.samples;
-  
-  // Calculate variance
-  float sumSquareDiff = 0;
-  for (int i = 0; i < metrics.samples; i++) {
-    float diff = samples[i] - metrics.average;
-    sumSquareDiff += diff * diff;
-  }
-  metrics.variance = sumSquareDiff / metrics.samples;
-}
-
-void publishMetrics() {
-  StaticJsonDocument<256> doc;
-  doc["current"] = metrics.current;
-  doc["peak"] = metrics.peak;
-  doc["average"] = metrics.average;
-  doc["variance"] = metrics.variance;
-  
-  char buffer[256];
-  serializeJson(doc, buffer);
-  client.publish("home/autovolume/metrics", buffer);
-  
-  // Also publish individual metrics for easier HA integration
-  client.publish("home/autovolume/sound_level", String(metrics.current).c_str());
-  client.publish("home/autovolume/sound_peak", String(metrics.peak).c_str());
-  client.publish("home/autovolume/sound_average", String(metrics.average).c_str());
-  client.publish("home/autovolume/sound_variance", String(metrics.variance).c_str());
-}
-
-void loop() {
-  if (!client.connected()) {
-    reconnectMQTT();
-  }
-  client.loop();
-  
-  unsigned long currentMillis = millis();
-  
-  // Check sound level periodically
-  if (currentMillis - lastVolumeCheck >= VOLUME_CHECK_INTERVAL) {
-    lastVolumeCheck = currentMillis;
-    
-    int soundLevel = getSoundLevel();
-    updateSoundMetrics(soundLevel);
-    Serial.printf("Sound level: %d\n", soundLevel);
-    
-    // If sound is above threshold and volume hasn't been reduced
-    if (soundLevel > SOUND_THRESHOLD && !volumeReduced) {
-      adjustTVVolume(true);  // Reduce volume
-      volumeReduced = true;
-    }
-    // If sound is below threshold and volume was previously reduced
-    else if (soundLevel <= SOUND_THRESHOLD && volumeReduced) {
-      adjustTVVolume(false);  // Increase volume
-      volumeReduced = false;
-    }
-  }
-  
-  static unsigned long lastSoundReport = 0;
-  if (currentMillis - lastSoundReport >= SOUND_REPORT_INTERVAL) {
-    publishMetrics();
-    lastSoundReport = currentMillis;
   }
 }
